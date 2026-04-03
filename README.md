@@ -1,12 +1,21 @@
 # BALL x PIT Save Editor
 
-Save file analysis and modification guide for [BALL x PIT](https://www.ballxpit.com/) (v1.299) by Devolver Digital.
+Save file analysis and modification guide for [BALL x PIT](https://www.ballxpit.com/) by Devolver Digital.
 
 > [!IMPORTANT]
 > Pre-modified save files are available in [Releases](https://github.com/VdustR/game-save-ball-pit/releases). Copy the save files to your platform's save directory (see below).
 
 > [!WARNING]
 > This guide is provided for educational and personal use only. Use at your own risk. Modifying save files may cause crashes, data loss, or unexpected behavior. Always back up your original save before making changes.
+
+## Game Version & Content
+
+This guide and the release save files are based on **v1.299**, which includes:
+
+| Content | Notes |
+|---------|-------|
+| Base Game (2025) | 8 levels, 17 characters, 70+ buildings |
+| [The Regal Update](https://ballxpit.wiki.gg/wiki/Game_Updates) (2026-01-26) | +2 characters (The Carouser, The Falconer), +3 buildings (Party House, Falconry Hut, Adventurer's Guild), +8 balls, +3 passives, Endless Mode |
 
 ## Requirements
 
