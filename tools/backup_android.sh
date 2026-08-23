@@ -30,24 +30,34 @@ if adb -s "$device_id" shell pidof "$package_id" | grep -q '[0-9]'; then
 fi
 
 timestamp=$(date -u +%Y%m%dT%H%M%SZ)
-snapshot_dir=$destination/$model-$device_id-$timestamp-v$version
-mkdir -p "$snapshot_dir"
+final_dir=$destination/$model-$device_id-$timestamp-v$version
+snapshot_dir=$final_dir.partial
+mkdir -p "$destination"
+if [ -e "$final_dir" ] || [ -e "$snapshot_dir" ]; then
+  echo "error: snapshot path already exists: $final_dir" >&2
+  exit 1
+fi
+mkdir "$snapshot_dir"
 
-adb -s "$device_id" shell sha256sum \
-  "$save_root/meta1.yankai" \
-  "$save_root/meta1_backup.yankai" \
-  "$save_root/saveslotinfo.balls" \
-  "$save_root/stats.csv" | sed 's#  .*/#  #' > "$snapshot_dir/device-sha256-before.txt"
-for filename in meta1.yankai meta1_backup.yankai saveslotinfo.balls stats.csv; do
+files="meta1.yankai meta1_backup.yankai saveslotinfo.balls"
+if adb -s "$device_id" shell test -f "$save_root/stats.csv"; then
+  files="$files stats.csv"
+fi
+
+device_manifest() {
+  for filename in $files; do
+    adb -s "$device_id" shell sha256sum "$save_root/$filename"
+  done | sed 's#  .*/#  #'
+}
+
+device_manifest > "$snapshot_dir/device-sha256-before.txt"
+for filename in $files; do
   adb -s "$device_id" pull "$save_root/$filename" "$snapshot_dir/$filename"
 done
-adb -s "$device_id" shell sha256sum \
-  "$save_root/meta1.yankai" \
-  "$save_root/meta1_backup.yankai" \
-  "$save_root/saveslotinfo.balls" \
-  "$save_root/stats.csv" | sed 's#  .*/#  #' > "$snapshot_dir/device-sha256-after.txt"
+device_manifest > "$snapshot_dir/device-sha256-after.txt"
 diff -u "$snapshot_dir/device-sha256-before.txt" "$snapshot_dir/device-sha256-after.txt"
-(cd "$snapshot_dir" && shasum -a 256 -c device-sha256-after.txt)
+(cd "$snapshot_dir" && shasum -a 256 -c device-sha256-after.txt >&2)
 chmod a-w "$snapshot_dir"/* "$snapshot_dir"
+mv "$snapshot_dir" "$final_dir"
 
-echo "$snapshot_dir"
+echo "$final_dir"
