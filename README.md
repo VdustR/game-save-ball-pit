@@ -8,9 +8,21 @@ Save file analysis and modification guide for [BALL x PIT](https://www.ballxpit.
 > [!WARNING]
 > This guide is provided for educational and personal use only. Use at your own risk. Modifying save files may cause crashes, data loss, or unexpected behavior. Always back up your original save before making changes.
 
-## Game Version & Content
+## Verified Game Versions
 
-This guide and the release save files are based on **v1.299**, which includes:
+The format and tools have been verified against these real saves:
+
+| Version | Platform | Status |
+|---------|----------|--------|
+| v1.301 | Android 16, Galaxy S23 | Resource parsing, editing, write-back, and game load verified on device |
+| v1.299 | Release fixture | Historical Regal Update baseline |
+
+The v1.301 device save includes the Regal, Shadow, and Naturalist updates. The
+Naturalist Update adds The Ballbearer, The Hoary Hoarder, Ball House, and
+Unstable Tower. See [the v1.301 format analysis](docs/format-v1.301.md) for the
+observed binary differences.
+
+The v1.299 release files include:
 
 | Content | Notes |
 |---------|-------|
@@ -39,7 +51,7 @@ The save format is cross-platform. The binary files (`meta1.yankai`, etc.) are i
 | File | Description |
 |------|-------------|
 | `meta1.yankai` | Main save file |
-| `meta1_backup.yankai` | Backup save (should match `meta1.yankai`) |
+| `meta1_backup.yankai` | Game-managed backup; it can differ from `meta1.yankai` |
 | `saveslotinfo.balls` | Save slot metadata (level count, playtime, seed) |
 
 > [!NOTE]
@@ -77,16 +89,16 @@ The stone resource is stored as a standalone `int32` immediately **after** each 
 
 | Field | Occurrences | Notes |
 |-------|-------------|-------|
-| `Lvl` | x56 | 0-indexed (value 99 = level 100). Match fields whose length prefix is `3` to avoid matching `ElevatorLvl`, `UpgradeLvl`, etc. |
-| `CurXP` | x23 | Per character slot (the game has 23 internal slots, though only 19 characters are playable) |
+| `Lvl` | x56 in v1.301 | 0-indexed (value 99 = level 100). Match the 4-byte name-length prefix and complete UTF-16LE field name to avoid `ElevatorLvl`, `UpgradeLvl`, etc. |
+| `CurXP` | x23 | Per serialized character slot; actual availability is platform-dependent |
 
 ### Buildings
 
 | Field | Occurrences | Notes |
 |-------|-------------|-------|
-| `UpgradeLvl` | x78 | Finite buildings cap at levels 3 to 5. **Setting higher causes battle crashes.** |
-| `UpgradePts` | x78 | Keep at 0 (= upgrade complete) |
-| `CurState` | x78 | 0 = built, 2 = upgrading |
+| `UpgradeLvl` | x83 in v1.301 | Finite buildings cap at levels 3 to 5. **Setting higher causes battle crashes.** |
+| `UpgradePts` | x83 in v1.301 | Keep at 0 (= upgrade complete) |
+| `CurState` | x106 in v1.301 | Building entries use 0 = built and 2 = upgrading; not every exact match is a building entry |
 
 #### Building List (Max Level 5 Unless Noted)
 
@@ -100,7 +112,7 @@ Wheat Field, Dense Wheat, Forest, Grand Tree, Boulder, Granite Slab
 Farm, Lumberyard, Stone Mine, Gold Mine, Gatherer's Hut
 
 **Other Economy**:
-Watch Tower, Road Keeper, Market, Worker's Guild, Spa
+Watch Tower, Road Keeper, Market, Worker's Guild, Spa, Guildhall
 
 </details>
 
@@ -124,7 +136,7 @@ Abbey, Jeweler, Necromancer, Bank, Matchmaker, Magnet Factory, Candle Maker, Gam
 <details>
 <summary>Housing Buildings (max 5) — each unlocks a character</summary>
 
-Sheriff's Office, Haunted House, Theater, Cozy Home, Villa, Mausoleum, Iron Fortress, Captain's Quarters, Campground, Single Family Home, Rocky Hill, Monastery, Laboratory, Veteran's Hut, Mansion, Falconry Hut, Party House
+Sheriff's Office, Haunted House, Theater, Cozy Home, Villa, Mausoleum, Iron Fortress, Captain's Quarters, Campground, Single Family Home, Rocky Hill, Monastery, Laboratory, Veteran's Hut, Mansion, Falconry Hut, Party House, Ball House, Unstable Tower
 
 </details>
 
@@ -143,7 +155,10 @@ Set `CurState` to `0` for these buildings to display as built. Very high values 
 
 ### Playable Characters
 
-There are 19 playable characters. Most are unlocked by building their corresponding housing building, which requires a blueprint drop from a specific level.
+The serialized v1.301 format still contains 23 character slots. The current
+content adds four characters after the Regal Update: The Tunneller, The
+Tiptoer, The Ballbearer, and The Hoary Hoarder. The False Messiah remains
+PC-exclusive, so platform availability differs from the serialized slot count.
 
 | # | Character | Unlock | Blueprint Source |
 |---|-----------|--------|------------------|
@@ -166,9 +181,13 @@ There are 19 playable characters. Most are unlocked by building their correspond
 | 17 | The Falconer | Falconry Hut | The HEAVENLYxGATES |
 | 18 | The Carouser | Party House | The VASTxVOID |
 | 19 | The False Messiah | Twitch Extension | PC-exclusive |
+| 20 | The Tunneller | Shadow Update | — |
+| 21 | The Tiptoer | Shadow Update | — |
+| 22 | The Ballbearer | Ball House | — |
+| 23 | The Hoary Hoarder | Unstable Tower | — |
 
 > [!NOTE]
-> The Warrior is available by default, and The False Messiah requires the Twitch Extension (PC only). All other characters require building their housing building from a blueprint.
+> The Warrior is available by default, and The False Messiah requires the Twitch Extension (PC only). Unlock requirements for update characters vary; rows without a verified blueprint source intentionally show `—`.
 
 ### Difficulty & Completion
 
@@ -217,10 +236,29 @@ To unlock the next NG+ tier:
 
 ## How to Apply
 
+### Inspect and edit
+
+The repository tool validates the v1.301 resource array count and marker before
+reading or writing. It refuses in-place edits, refuses to overwrite an existing
+output, and updates both current and total resource values in the new copy.
+
+```bash
+python3 tools/ballxpit_save.py inspect meta1.yankai
+python3 tools/ballxpit_save.py diff old.yankai new.yankai
+python3 tools/ballxpit_save.py edit-resources meta1.yankai dist/meta1.yankai \
+  --money 999999 --rice 999999 --wood 999999 --stone 999999
+```
+
+On Android, create a read-only snapshot before editing:
+
+```bash
+tools/backup_android.sh DEVICE_SERIAL
+```
+
 1. **Close the game** before modifying saves
-2. Back up the original `meta1.yankai`
-3. Edit with Python (see format above)
-4. Copy the modified file to both `meta1.yankai` and `meta1_backup.yankai`
+2. Back up `meta1.yankai`, `meta1_backup.yankai`, and `saveslotinfo.balls`
+3. Generate edited copies with the tool above
+4. Edit the main and game-managed backup from their respective originals; do not assume they are identical
 5. Launch the game
 
 ### Android (via ADB)
@@ -229,7 +267,7 @@ To unlock the next NG+ tier:
 # Pull save
 adb pull /sdcard/Android/data/com.devolverdigital.ballxpit/files/meta1.yankai save.yankai
 
-# Edit with Python (see format above)
+# Generate edited copies locally (see above)
 
 # Push save (ensure the game is not running)
 adb shell am force-stop com.devolverdigital.ballxpit
