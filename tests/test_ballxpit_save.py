@@ -3,7 +3,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools.ballxpit_save import SaveFormatError, count_fields, edit_resources, find_resource_values
+from tools.ballxpit_save import (
+    SaveFormatError,
+    count_fields,
+    edit_meta,
+    edit_resources,
+    encoded_field,
+    field_value_offsets,
+    find_resource_values,
+    int_array_offsets,
+    unique_field_offset,
+)
 
 
 def fixture(resources=(4, 10, 20, 30, 40), totals=(4, 100, 200, 300, 400)):
@@ -11,6 +21,46 @@ def fixture(resources=(4, 10, 20, 30, 40), totals=(4, 100, 200, 300, 400)):
         return struct.pack("<I", len(name)) + name.encode("utf-16le") + b"type-metadata" + b"\x08\x04\x00\x00\x00" + struct.pack("<5i", *values)
 
     return b"header" + field("NumResources", resources) + field("TotalResources", totals) + b"footer"
+
+
+def named_int(name, value):
+    return encoded_field(name) + struct.pack("<i", value)
+
+
+def named_int_array(name, values):
+    return (
+        encoded_field(name)
+        + b"array-metadata"
+        + b"\x08"
+        + struct.pack("<i", len(values))
+        + struct.pack("<i", 4)
+        + struct.pack(f"<{len(values)}i", *values)
+    )
+
+
+def meta_fixture():
+    buildings = encoded_field("Buildings")
+    buildings += named_int("Type", 34) + named_int("UpgradePts", 10)
+    buildings += named_int("UpgradeLvl", 5) + named_int("CurState", 2)
+    buildings += named_int("Type", 0) + named_int("UpgradePts", 20)
+    buildings += named_int("UpgradeLvl", 0) + named_int("CurState", 2)
+    buildings += named_int("Type", 999) + named_int("UpgradePts", 30)
+    buildings += named_int("UpgradeLvl", 7) + named_int("CurState", 2)
+
+    chars = encoded_field("Chars")
+    chars += named_int("Type", 0) + named_int("CurState", 0)
+    chars += named_int("Type", 70) + named_int("Lvl", 2) + named_int("CurXP", 123)
+    chars += named_int("Type", 5) + named_int("CurState", 0)
+    chars += named_int("Type", 71) + named_int("Lvl", 8) + named_int("CurXP", 456)
+    chars += encoded_field("Blueprints")
+
+    wiki = encoded_field("HeroStats")
+    wiki += named_int("NumObtained", 0) + named_int_array("NumCombos", [0, 2])
+    wiki += named_int("NumObtained", 3) + named_int_array("NumCombos", [0, 0])
+    wiki += encoded_field("PassiveStats")
+    wiki += named_int("NumObtained", 0) + named_int("NumObtained", 4)
+    wiki += encoded_field("NumHarvests")
+    return fixture() + buildings + chars + wiki
 
 
 class SaveToolTests(unittest.TestCase):
@@ -65,6 +115,137 @@ class SaveToolTests(unittest.TestCase):
     def test_rejects_invalid_marker(self):
         with self.assertRaisesRegex(SaveFormatError, "found 0"):
             find_resource_values(fixture(resources=(3, 1, 2, 3, 4)), "NumResources")
+
+    def test_edit_meta_targets_structural_records_and_preserves_unknowns(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.yankai"
+            output_path = Path(directory) / "output.yankai"
+            input_path.write_bytes(meta_fixture())
+            result = edit_meta(
+                input_path,
+                output_path,
+                resource_value=10_000,
+                infinite_building_level=20,
+                max_known_finite_buildings=True,
+                character_level=50,
+                character_types=frozenset({5}),
+                unlock_wiki=True,
+            )
+            edited = output_path.read_bytes()
+
+            self.assertEqual(
+                find_resource_values(edited, "NumResources")[1],
+                (4, 10_000, 10_000, 10_000, 10_000),
+            )
+            self.assertEqual(
+                find_resource_values(edited, "TotalResources")[1],
+                (4, 100, 200, 300, 400),
+            )
+
+            buildings_start = unique_field_offset(edited, "Buildings")
+            buildings_end = unique_field_offset(edited, "Chars")
+            building_levels = field_value_offsets(
+                edited, "UpgradeLvl", buildings_start, buildings_end
+            )
+            building_points = field_value_offsets(
+                edited, "UpgradePts", buildings_start, buildings_end
+            )
+            building_states = field_value_offsets(
+                edited, "CurState", buildings_start, buildings_end
+            )
+            self.assertEqual(
+                [struct.unpack_from("<i", edited, offset)[0] for offset in building_levels],
+                [20, 4, 7],
+            )
+            self.assertEqual(
+                [struct.unpack_from("<i", edited, offset)[0] for offset in building_points],
+                [0, 0, 30],
+            )
+            self.assertEqual(
+                [struct.unpack_from("<i", edited, offset)[0] for offset in building_states],
+                [0, 0, 2],
+            )
+            self.assertEqual(result["unknownFiniteBuildingTypesPreserved"], [999])
+
+            chars_start = unique_field_offset(edited, "Chars")
+            chars_end = unique_field_offset(edited, "Blueprints")
+            char_levels = field_value_offsets(edited, "Lvl", chars_start, chars_end)
+            char_xp = field_value_offsets(edited, "CurXP", chars_start, chars_end)
+            self.assertEqual(
+                [struct.unpack_from("<i", edited, offset)[0] for offset in char_levels],
+                [2, 49],
+            )
+            self.assertEqual(
+                [struct.unpack_from("<i", edited, offset)[0] for offset in char_xp],
+                [123, 0],
+            )
+
+            hero_start = unique_field_offset(edited, "HeroStats")
+            passive_start = unique_field_offset(edited, "PassiveStats")
+            combo_arrays = int_array_offsets(edited, "NumCombos", hero_start, passive_start)
+            for values_offset, count in combo_arrays:
+                self.assertTrue(
+                    all(
+                        value >= 1
+                        for value in struct.unpack_from(
+                            f"<{count}i", edited, values_offset
+                        )
+                    )
+                )
+
+    def test_edit_meta_requires_an_operation(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.yankai"
+            output_path = Path(directory) / "output.yankai"
+            input_path.write_bytes(meta_fixture())
+            with self.assertRaisesRegex(SaveFormatError, "at least one edit"):
+                edit_meta(input_path, output_path)
+
+    def test_edit_meta_rejects_character_level_above_cap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.yankai"
+            output_path = Path(directory) / "output.yankai"
+            input_path.write_bytes(meta_fixture())
+            with self.assertRaisesRegex(SaveFormatError, "between 1 and 100"):
+                edit_meta(input_path, output_path, character_level=101)
+
+    def test_edit_meta_rejects_interleaved_building_records(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.yankai"
+            output_path = Path(directory) / "output.yankai"
+            malformed = encoded_field("Buildings")
+            malformed += named_int("Type", 34) + named_int("Type", 0)
+            malformed += named_int("UpgradePts", 0) + named_int("UpgradeLvl", 0)
+            malformed += named_int("CurState", 0)
+            malformed += named_int("UpgradePts", 0) + named_int("UpgradeLvl", 0)
+            malformed += named_int("CurState", 0)
+            malformed += encoded_field("Chars")
+            input_path.write_bytes(malformed)
+            with self.assertRaisesRegex(SaveFormatError, "field containment"):
+                edit_meta(input_path, output_path, infinite_building_level=20)
+
+    def test_edit_meta_does_not_follow_broken_output_symlink(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.yankai"
+            output_path = Path(directory) / "output.yankai"
+            target_path = Path(directory) / "missing-target.yankai"
+            input_path.write_bytes(meta_fixture())
+            output_path.symlink_to(target_path)
+            with self.assertRaisesRegex(SaveFormatError, "already exists"):
+                edit_meta(input_path, output_path, resource_value=10_000)
+            self.assertFalse(target_path.exists())
+
+    def test_edit_meta_rejects_nonadjacent_character_level(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.yankai"
+            output_path = Path(directory) / "output.yankai"
+            malformed = encoded_field("Chars")
+            malformed += named_int("Type", 0) + named_int("CurState", 0)
+            malformed += named_int("Lvl", 2) + named_int("Unexpected", 9)
+            malformed += named_int("CurXP", 123) + encoded_field("Blueprints")
+            input_path.write_bytes(malformed)
+            with self.assertRaisesRegex(SaveFormatError, "Lvl adjacency"):
+                edit_meta(input_path, output_path, character_level=50)
 
 
 if __name__ == "__main__":

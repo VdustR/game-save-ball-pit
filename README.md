@@ -249,6 +249,44 @@ python3 tools/ballxpit_save.py edit-resources meta1.yankai dist/meta1.yankai \
   --money 999999 --rice 999999 --wood 999999 --stone 999999
 ```
 
+The `edit-meta` command exposes additional structure-aware edits while retaining
+the same no-overwrite behavior:
+
+```bash
+python3 tools/ballxpit_save.py edit-meta meta1.yankai dist/meta1.yankai \
+  --resources 10000 \
+  --infinite-building-level 20 \
+  --max-known-finite-buildings \
+  --character-level 100 \
+  --unlock-wiki
+```
+
+Available metadata options:
+
+| Option | Behavior |
+|--------|----------|
+| `--resources N` | Sets all four current balances to `N`; lifetime totals are preserved |
+| `--infinite-building-level N` | Sets only building types 34–39 to stored level `N` and marks their upgrades complete |
+| `--max-known-finite-buildings` | Applies stored caps observed in the v1.299 perfected save, marks upgrades complete, and preserves unknown types |
+| `--character-level N` | Sets the displayed level from 1–100 and resets current XP to 0 |
+| `--character-types 0,5` | Limits the character-level edit to the listed internal type IDs |
+| `--unlock-wiki` | Marks ball, passive, and ball-combination statistics as discovered |
+
+`--max-known-finite-buildings` is deliberately conservative. Game updates can
+add type IDs whose caps have not been verified; the command reports and leaves
+those records unchanged instead of guessing. `--unlock-wiki` edits discovery
+statistics only. It does not unlock characters, blueprints, levels, or tutorial
+progress.
+
+`NumCombos` uses an observed 90-by-90 counter matrix in current saves: each row
+stores the `0x04` primitive marker followed by 90 counters. The wiki editor
+requires a square matrix matching the number of `HeroStats` entries and refuses
+the edit if those dimensions differ.
+
+Changing a character level does not synthesize random stat gains or harvest
+upgrade choices from skipped levels. Treat metadata edits as experimental and
+test one change at a time from a restorable backup.
+
 On Android, create a read-only snapshot before editing:
 
 ```bash
