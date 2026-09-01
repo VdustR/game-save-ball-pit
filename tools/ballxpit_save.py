@@ -41,6 +41,19 @@ RESOURCE_NAMES = ("marker", "money", "rice", "wood", "stone")
 ARRAY_HEADER = b"\x08\x04\x00\x00\x00"
 MAX_INT32 = 2_147_483_647
 INFINITE_BUILDING_TYPES = frozenset({34, 35, 36, 37, 38, 39})
+SAVE_SECTION_FIELDS = (
+    "Buildings",
+    "Chars",
+    "Blueprints",
+    "HeroStats",
+    "PassiveStats",
+    "NumHarvests",
+    "NumBossBlueprintsDropped",
+)
+SAVE_ROOT = "MetaSaveData, Assembly-CSharp"
+# Record bytes observed at the beginning and end of the project's complete saves.
+SAVE_START_RECORD = 2
+SAVE_TERMINATOR = 5
 
 # Stored, zero-based values observed in the project's v1.299 perfected save.
 # Types absent from this table are preserved rather than assigned a guessed cap.
@@ -74,6 +87,22 @@ def unique_field_offset(data: bytes, name: str) -> int:
     if len(offsets) != 1:
         raise SaveFormatError(f"expected one {name!r} field, found {len(offsets)}")
     return offsets[0]
+
+
+def validate_save_envelope(data: bytes) -> None:
+    if not data or data[0] != SAVE_START_RECORD:
+        raise SaveFormatError("save has an invalid stream header")
+    root_offset = unique_field_offset(data, SAVE_ROOT)
+    offsets = [unique_field_offset(data, name) for name in SAVE_SECTION_FIELDS]
+    if [root_offset, *offsets] != sorted((root_offset, *offsets)):
+        raise SaveFormatError("save sections are out of order")
+
+    terminal_field = encoded_field(SAVE_SECTION_FIELDS[-1])
+    terminal_value_offset = offsets[-1] + len(terminal_field)
+    if terminal_value_offset + 5 != len(data):
+        raise SaveFormatError("save has a truncated or unexpected trailing payload")
+    if data[-1] != SAVE_TERMINATOR:
+        raise SaveFormatError("save has an invalid stream terminator")
 
 
 def field_value_offsets(data: bytes, name: str, start: int, end: int) -> list[int]:
@@ -229,6 +258,7 @@ def edit_resources(
             raise SaveFormatError(f"{name} is outside the signed int32 safe range")
 
     original = input_path.read_bytes()
+    validate_save_envelope(original)
     edited = bytearray(original)
     before = {}
     after = {}
@@ -293,6 +323,7 @@ def edit_meta(
         raise SaveFormatError("--character-types requires --character-level")
 
     original = input_path.read_bytes()
+    validate_save_envelope(original)
     edited = bytearray(original)
     result: dict[str, object] = {
         "input": str(input_path),
@@ -304,7 +335,9 @@ def edit_meta(
         offset, values = find_resource_values(original, "NumResources")
         struct.pack_into("<5i", edited, offset, values[0], *([resource_value] * 4))
         result["currentResourcesBefore"] = {
-            name: values[index] for index, name in enumerate(RESOURCE_NAMES)
+            name: values[index]
+            for index, name in enumerate(RESOURCE_NAMES)
+            if name != "marker"
         }
         result["currentResourcesAfter"] = {
             name: resource_value for name in RESOURCE_NAMES[1:]
@@ -565,6 +598,20 @@ def parser() -> argparse.ArgumentParser:
     return result
 
 
+def parse_character_types(value: str) -> frozenset[int]:
+    try:
+        character_types = frozenset(
+            int(item.strip()) for item in value.split(",") if item.strip()
+        )
+    except ValueError as error:
+        raise SaveFormatError(
+            "--character-types must be a comma-separated list of integer type IDs"
+        ) from error
+    if not character_types:
+        raise SaveFormatError("--character-types cannot be empty")
+    return character_types
+
+
 def main() -> int:
     args = parser().parse_args()
     try:
@@ -582,13 +629,7 @@ def main() -> int:
         else:
             character_types = None
             if args.character_types is not None:
-                character_types = frozenset(
-                    int(value.strip())
-                    for value in args.character_types.split(",")
-                    if value.strip()
-                )
-                if not character_types:
-                    raise SaveFormatError("--character-types cannot be empty")
+                character_types = parse_character_types(args.character_types)
             result = edit_meta(
                 args.input,
                 args.output,

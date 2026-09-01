@@ -261,6 +261,11 @@ python3 tools/ballxpit_save.py edit-meta meta1.yankai dist/meta1.yankai \
   --unlock-wiki
 ```
 
+Before publishing an edited copy, both edit commands require a complete save
+envelope: the root record, major sections, terminal field, and stream terminator
+must be present in their expected order. Truncated saves and files with trailing
+payloads are rejected.
+
 Available metadata options:
 
 | Option | Behavior |

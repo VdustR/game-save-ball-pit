@@ -12,15 +12,38 @@ from tools.ballxpit_save import (
     field_value_offsets,
     find_resource_values,
     int_array_offsets,
+    parse_character_types,
     unique_field_offset,
+    validate_save_envelope,
 )
 
 
-def fixture(resources=(4, 10, 20, 30, 40), totals=(4, 100, 200, 300, 400)):
+def fixture(
+    resources=(4, 10, 20, 30, 40),
+    totals=(4, 100, 200, 300, 400),
+    complete=True,
+):
     def field(name, values):
         return struct.pack("<I", len(name)) + name.encode("utf-16le") + b"type-metadata" + b"\x08\x04\x00\x00\x00" + struct.pack("<5i", *values)
 
-    return b"header" + field("NumResources", resources) + field("TotalResources", totals) + b"footer"
+    data = (
+        b"\x02"
+        + encoded_field("MetaSaveData, Assembly-CSharp")
+        + field("NumResources", resources)
+        + field("TotalResources", totals)
+    )
+    if complete:
+        for name in (
+            "Buildings",
+            "Chars",
+            "Blueprints",
+            "HeroStats",
+            "PassiveStats",
+            "NumHarvests",
+        ):
+            data += encoded_field(name)
+        data += named_int("NumBossBlueprintsDropped", 0) + b"\x05"
+    return data
 
 
 def named_int(name, value):
@@ -60,7 +83,14 @@ def meta_fixture():
     wiki += encoded_field("PassiveStats")
     wiki += named_int("NumObtained", 0) + named_int("NumObtained", 4)
     wiki += encoded_field("NumHarvests")
-    return fixture() + buildings + chars + wiki
+    return (
+        fixture(complete=False)
+        + buildings
+        + chars
+        + wiki
+        + named_int("NumBossBlueprintsDropped", 0)
+        + b"\x05"
+    )
 
 
 class SaveToolTests(unittest.TestCase):
@@ -166,6 +196,14 @@ class SaveToolTests(unittest.TestCase):
                 [0, 0, 2],
             )
             self.assertEqual(result["unknownFiniteBuildingTypesPreserved"], [999])
+            self.assertEqual(
+                result["currentResourcesBefore"],
+                {"money": 10, "rice": 20, "wood": 30, "stone": 40},
+            )
+            self.assertEqual(
+                set(result["currentResourcesBefore"]),
+                set(result["currentResourcesAfter"]),
+            )
 
             chars_start = unique_field_offset(edited, "Chars")
             chars_end = unique_field_offset(edited, "Blueprints")
@@ -213,13 +251,18 @@ class SaveToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / "input.yankai"
             output_path = Path(directory) / "output.yankai"
-            malformed = encoded_field("Buildings")
+            malformed = fixture(complete=False) + encoded_field("Buildings")
             malformed += named_int("Type", 34) + named_int("Type", 0)
             malformed += named_int("UpgradePts", 0) + named_int("UpgradeLvl", 0)
             malformed += named_int("CurState", 0)
             malformed += named_int("UpgradePts", 0) + named_int("UpgradeLvl", 0)
             malformed += named_int("CurState", 0)
             malformed += encoded_field("Chars")
+            malformed += encoded_field("Blueprints")
+            malformed += encoded_field("HeroStats")
+            malformed += encoded_field("PassiveStats")
+            malformed += encoded_field("NumHarvests")
+            malformed += named_int("NumBossBlueprintsDropped", 0) + b"\x05"
             input_path.write_bytes(malformed)
             with self.assertRaisesRegex(SaveFormatError, "field containment"):
                 edit_meta(input_path, output_path, infinite_building_level=20)
@@ -239,13 +282,73 @@ class SaveToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / "input.yankai"
             output_path = Path(directory) / "output.yankai"
-            malformed = encoded_field("Chars")
+            malformed = fixture(complete=False) + encoded_field("Buildings")
+            malformed += encoded_field("Chars")
             malformed += named_int("Type", 0) + named_int("CurState", 0)
             malformed += named_int("Lvl", 2) + named_int("Unexpected", 9)
             malformed += named_int("CurXP", 123) + encoded_field("Blueprints")
+            malformed += encoded_field("HeroStats")
+            malformed += encoded_field("PassiveStats")
+            malformed += encoded_field("NumHarvests")
+            malformed += named_int("NumBossBlueprintsDropped", 0) + b"\x05"
             input_path.write_bytes(malformed)
             with self.assertRaisesRegex(SaveFormatError, "Lvl adjacency"):
                 edit_meta(input_path, output_path, character_level=50)
+
+    def test_edit_meta_rejects_truncated_save_before_publishing(self):
+        original = meta_fixture()
+        cut_offsets = [
+            unique_field_offset(original, name)
+            for name in (
+                "Buildings",
+                "Chars",
+                "Blueprints",
+                "HeroStats",
+                "PassiveStats",
+                "NumHarvests",
+            )
+        ]
+        cut_offsets.append(len(original) - 1)
+        with tempfile.TemporaryDirectory() as directory:
+            for index, cut_offset in enumerate(cut_offsets):
+                with self.subTest(cut_offset=cut_offset):
+                    input_path = Path(directory) / f"input-{index}.yankai"
+                    output_path = Path(directory) / f"output-{index}.yankai"
+                    input_path.write_bytes(original[:cut_offset])
+                    with self.assertRaises(SaveFormatError):
+                        edit_meta(input_path, output_path, resource_value=123)
+                    self.assertFalse(output_path.exists())
+
+    def test_edit_meta_rejects_leading_truncation_before_publishing(self):
+        original = meta_fixture()
+        with tempfile.TemporaryDirectory() as directory:
+            for index, cut_offset in enumerate((1, 2, 8, 32)):
+                with self.subTest(cut_offset=cut_offset):
+                    input_path = Path(directory) / f"input-{index}.yankai"
+                    output_path = Path(directory) / f"output-{index}.yankai"
+                    input_path.write_bytes(original[cut_offset:])
+                    with self.assertRaises(SaveFormatError):
+                        edit_meta(input_path, output_path, resource_value=123)
+                    self.assertFalse(output_path.exists())
+
+    def test_edit_resources_rejects_trailing_payload_before_publishing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.yankai"
+            output_path = Path(directory) / "output.yankai"
+            input_path.write_bytes(fixture() + b"unexpected")
+            with self.assertRaisesRegex(SaveFormatError, "trailing"):
+                edit_resources(input_path, output_path, {"money": 1})
+            self.assertFalse(output_path.exists())
+
+    def test_validate_save_envelope_rejects_invalid_terminator(self):
+        malformed = fixture()[:-1] + b"\x00"
+        with self.assertRaisesRegex(SaveFormatError, "terminator"):
+            validate_save_envelope(malformed)
+
+    def test_parse_character_types_reports_actionable_error(self):
+        self.assertEqual(parse_character_types("0, 5"), frozenset({0, 5}))
+        with self.assertRaisesRegex(SaveFormatError, "integer type IDs"):
+            parse_character_types("0,nope")
 
 
 if __name__ == "__main__":
